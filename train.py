@@ -22,6 +22,12 @@ from torchvision import transforms
 from torch.autograd import Variable
 import torch.optim as optim
 
+import warnings
+warnings.simplefilter('ignore', category=DeprecationWarning)
+
+import logging
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--epochs", type=int, default=100, help="number of epochs")
@@ -36,10 +42,13 @@ if __name__ == "__main__":
     parser.add_argument("--evaluation_interval", type=int, default=1, help="interval evaluations on validation set")
     parser.add_argument("--compute_map", default=False, help="if True computes mAP every tenth batch")
     parser.add_argument("--multiscale_training", default=True, help="allow for multi-scale training")
+    parser.add_argument("--tb_dir", default="logs", help="tensord record file dir")
+    parser.add_argument("--resume", default=0, type=int, help="resume epoch")
     opt = parser.parse_args()
-    print(opt)
 
-    logger = Logger("logs")
+    logger = Logger(opt.tb_dir)
+    set_logging(opt.tb_dir)
+    logging.info(opt)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -93,9 +102,16 @@ if __name__ == "__main__":
         "conf_noobj",
     ]
 
-    for epoch in range(opt.epochs):
+    max_map = 0
+    save_model = False
+
+    for epoch in range(opt.resume, opt.resume+opt.epochs):
         model.train()
         start_time = time.time()
+
+        logging.info(f"\n [epoch {epoch}]\n")
+        total_loss = 0
+
         for batch_i, (_, imgs, targets) in enumerate(dataloader):
             batches_done = len(dataloader) * epoch + batch_i
 
@@ -135,20 +151,22 @@ if __name__ == "__main__":
                 tensorboard_log += [("loss", loss.item())]
                 logger.list_of_scalars_summary(tensorboard_log, batches_done)
 
-            log_str += AsciiTable(metric_table).table
-            log_str += f"\nTotal loss {loss.item()}"
+            # log_str += AscqiiTable(metric_table).table
+            # log_str += f"\nTotal loss {loss.item()}"
 
             # Determine approximate time left for epoch
             epoch_batches_left = len(dataloader) - (batch_i + 1)
             time_left = datetime.timedelta(seconds=epoch_batches_left * (time.time() - start_time) / (batch_i + 1))
-            log_str += f"\n---- ETA {time_left}"
+            # log_str += f"\n---- ETA {time_left}"
 
-            print(log_str)
+            # logging.info(log_str)
+            # logging.info(f"batch {batch_i}, total loss = {loss.item()}")
+            total_loss += loss.item()
 
             model.seen += imgs.size(0)
 
         if epoch % opt.evaluation_interval == 0:
-            print("\n---- Evaluating Model ----")
+            logging.info("\n---- Evaluating Model ----")
             # Evaluate the model on the validation set
             precision, recall, AP, f1, ap_class = evaluate(
                 model,
@@ -171,8 +189,14 @@ if __name__ == "__main__":
             ap_table = [["Index", "Class name", "AP"]]
             for i, c in enumerate(ap_class):
                 ap_table += [[c, class_names[c], "%.5f" % AP[i]]]
-            print(AsciiTable(ap_table).table)
-            print(f"---- mAP {AP.mean()}")
+            logging.info("\n"+AsciiTable(ap_table).table)
+            logging.info(f"---- mAP {AP.mean()}, avg_loss {total_loss/len(dataloader)}")
 
-        if epoch % opt.checkpoint_interval == 0:
+            if AP.mean() >= max_map:
+                max_map = AP.mean()
+                save_model = True
+
+        if epoch % opt.checkpoint_interval == 0 and save_model == True:
+            logging.info(f"mAP = {max_map}, save model epoch = {epoch}")
             torch.save(model.state_dict(), f"checkpoints/yolov3_ckpt_%d.pth" % epoch)
+            save_model = False

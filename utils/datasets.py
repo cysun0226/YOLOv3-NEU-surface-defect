@@ -4,12 +4,14 @@ import os
 import sys
 import numpy as np
 from PIL import Image
+import PIL
 import torch
 import torch.nn.functional as F
 
 from utils.augmentations import horisontal_flip
 from torch.utils.data import Dataset
 import torchvision.transforms as transforms
+import imgaug.augmenters as iaa
 
 
 def pad_to_square(img, pad_value):
@@ -35,6 +37,24 @@ def random_resize(images, min_size=288, max_size=448):
     images = F.interpolate(images, size=new_size, mode="nearest")
     return images
 
+class ImgAugTransform:
+  def __init__(self):
+    self.aug = iaa.Sequential([
+        # iaa.Sometimes(0.1, iaa.GaussianBlur(sigma=(0, 1.5))),
+        iaa.Sometimes(0.25, iaa.Fliplr(0.5)),
+        iaa.Sometimes(0.25, iaa.Flipud(0.5)), 
+        iaa.Sometimes(0.1, iaa.Affine(rotate=(-15, 15), mode='symmetric')), 
+        iaa.Sometimes(0.1,
+                      iaa.OneOf([iaa.Dropout(p=(0, 0.1)),
+                                 iaa.CoarseDropout((0.0, 0.05), size_percent=(0.01, 0.1))])),
+        iaa.Sometimes(0.1, iaa.SaltAndPepper(0.1))
+    ])
+      
+  def __call__(self, img):
+    img = np.array(img)
+    out = self.aug.augment_image(img)
+    out = PIL.Image.fromarray(out.astype('uint8'), 'RGB')
+    return out
 
 class ImageFolder(Dataset):
     def __init__(self, folder_path, img_size=416):
@@ -83,7 +103,14 @@ class ListDataset(Dataset):
         img_path = self.img_files[index % len(self.img_files)].rstrip()
 
         # Extract image as PyTorch tensor
-        img = transforms.ToTensor()(Image.open(img_path).convert('RGB'))
+        # Augmentation
+        if self.augment:
+            img = transforms.Compose([
+                ImgAugTransform(),
+                transforms.ToTensor()
+            ])(Image.open(img_path).convert('RGB'))
+        else:
+            img = transforms.ToTensor()(Image.open(img_path).convert('RGB'))
 
         # Handle images with less than three channels
         if len(img.shape) != 3:

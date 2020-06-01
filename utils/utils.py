@@ -10,6 +10,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 
+USE_GIOU = False
 
 def to_cpu(tensor):
     return tensor.detach().cpu()
@@ -173,7 +174,12 @@ def get_batch_statistics(outputs, targets, iou_threshold):
                 if pred_label not in target_labels:
                     continue
 
-                iou, box_index = bbox_iou(pred_box.unsqueeze(0), target_boxes).max(0)
+                if USE_GIOU:
+                    iou, box_index = bbox_giou(pred_box.unsqueeze(0), target_boxes).max(0)
+                else:
+                    iou, box_index = bbox_iou(pred_box.unsqueeze(0), target_boxes).max(0)
+                
+
                 if iou >= iou_threshold and box_index not in detected_boxes:
                     true_positives[pred_i] = 1
                     detected_boxes += [box_index]
@@ -190,7 +196,7 @@ def bbox_wh_iou(wh1, wh2):
     return inter_area / union_area
 
 
-def bbox_iou(box1, box2, x1y1x2y2=True):
+def bbox_iou(box1, box2, x1y1x2y2=True, debug=False):
     """
     Returns the IoU of two bounding boxes
     """
@@ -204,6 +210,19 @@ def bbox_iou(box1, box2, x1y1x2y2=True):
         # Get the coordinates of bounding boxes
         b1_x1, b1_y1, b1_x2, b1_y2 = box1[:, 0], box1[:, 1], box1[:, 2], box1[:, 3]
         b2_x1, b2_y1, b2_x2, b2_y2 = box2[:, 0], box2[:, 1], box2[:, 2], box2[:, 3]
+    
+    if debug:
+        print(f"box1={box1}")
+        print(f"box2={box2}")
+        print(f"b1_x1={b1_x1}")
+        print(f"b1_x2={b1_x2}")
+        print(f"b1_y1={b1_y1}")
+        print(f"b1_y2={b1_y2}")
+        print(f"b2_x1={b2_x1}")
+        print(f"b2_x2={b2_x2}")
+        print(f"b2_y1={b2_y1}")
+        print(f"b2_y2={b2_y2}")
+
 
     # get the corrdinates of the intersection rectangle
     inter_rect_x1 = torch.max(b1_x1, b2_x1)
@@ -214,14 +233,101 @@ def bbox_iou(box1, box2, x1y1x2y2=True):
     inter_area = torch.clamp(inter_rect_x2 - inter_rect_x1 + 1, min=0) * torch.clamp(
         inter_rect_y2 - inter_rect_y1 + 1, min=0
     )
+
+    if debug:
+        print(f"inter_area={inter_area}")
+
     # Union Area
     b1_area = (b1_x2 - b1_x1 + 1) * (b1_y2 - b1_y1 + 1)
     b2_area = (b2_x2 - b2_x1 + 1) * (b2_y2 - b2_y1 + 1)
+
+    if debug:
+        print(f"b1_area={b1_area}")
+        print(f"b2_area={b2_area}")
 
     iou = inter_area / (b1_area + b2_area - inter_area + 1e-16)
 
     return iou
 
+def bbox_giou(box1, box2, x1y1x2y2=True, debug=False, target="cuda"):
+    """Calculate the gious between each bbox of bboxes1 and bboxes2.
+    Args:
+        bboxes1(ndarray): shape (n, 4)
+        bboxes2(ndarray): shape (k, 4)
+    Returns:
+        gious(ndarray): shape (n, k)
+
+    from: https://github.com/diggerdu/Generalized-Intersection-over-Union/blob/master/bbox_overlaps.py
+    Not usable.
+
+    from: https://zhuanlan.zhihu.com/p/94799295
+    bug: the length of x1 may not be the same as iou.
+    """
+
+    if not x1y1x2y2:
+        # Transform from center and width to exact coordinates
+        x1, x2 = box1[:, 0] - box1[:, 2] / 2, box1[:, 0] + box1[:, 2] / 2
+        y1, y2 = box1[:, 1] - box1[:, 3] / 2, box1[:, 1] + box1[:, 3] / 2
+        x3, x4 = box2[:, 0] - box2[:, 2] / 2, box2[:, 0] + box2[:, 2] / 2
+        y3, y4 = box2[:, 1] - box2[:, 3] / 2, box2[:, 1] + box2[:, 3] / 2
+    else:
+        # Get the coordinates of bounding boxes
+        x1, y1, x2, y2 = box1[:, 0], box1[:, 1], box1[:, 2], box1[:, 3]
+        x3, y3, x4, y4 = box2[:, 0], box2[:, 1], box2[:, 2], box2[:, 3]
+
+    
+    iou = bbox_iou(box1, box2, x1y1x2y2, debug)
+
+    if debug:
+        print(f"iou={iou}")
+        print(f"x1={x1}")
+    
+    giou_list = []
+
+    if len(x1) != len(iou):
+        x1 = x1.tolist()
+        x2 = x2.tolist()
+        y1 = y1.tolist()
+        y2 = y2.tolist()
+
+        # if len(box1) not equal to len(box2)
+        while len(x1) != len(iou):
+            x1.append(x1[0])
+            x2.append(x2[0])
+            y1.append(y1[0])
+            y2.append(y2[0])
+        
+        x1 = torch.FloatTensor(x1)
+        x2 = torch.FloatTensor(x2)
+        y1 = torch.FloatTensor(y1)
+        y2 = torch.FloatTensor(y2)
+
+    for i in range(len(iou)):
+        area_C = (max(x1[i],x2[i],x3[i],x4[i])-min(x1[i],x2[i],x3[i],x4[i]))*(max(y1[i],y2[i],y3[i],y4[i])-min(y1[i],y2[i],y3[i],y4[i]))
+        area_1 = (x2[i]-x1[i])*(y1[i]-y2[i])
+        area_2 = (x4[i]-x3[i])*(y3[i]-y4[i])
+        sum_area = area_1 + area_2
+
+        w1 = x2[i] - x1[i]
+        w2 = x4[i] - x3[i]
+        h1 = y1[i] - y2[i]
+        h2 = y3[i] - y4[i]
+        W = min(x1[i],x2[i],x3[i],x4[i])+w1+w2-max(x1[i],x2[i],x3[i],x4[i])
+        H = min(y1[i],y2[i],y3[i],y4[i])+h1+h2-max(y1[i],y2[i],y3[i],y4[i])
+        Area = W*H
+        add_area = sum_area - Area
+
+        end_area = (area_C - add_area)/area_C
+        giou = iou[i] - end_area
+        if debug:
+            print(f"giou={giou}")
+        giou_list.append(giou)
+    
+    # convert list to tensor
+    giou_tensor = torch.FloatTensor(giou_list)
+    giou_tensor = giou_tensor.to(device=target)
+
+    return giou_tensor
 
 def non_max_suppression(prediction, conf_thres=0.5, nms_thres=0.4):
     """
@@ -249,7 +355,19 @@ def non_max_suppression(prediction, conf_thres=0.5, nms_thres=0.4):
         # Perform non-maximum suppression
         keep_boxes = []
         while detections.size(0):
-            large_overlap = bbox_iou(detections[0, :4].unsqueeze(0), detections[:, :4]) > nms_thres
+            debug = False
+
+            if USE_GIOU:
+                large_overlap = bbox_giou(detections[0, :4].unsqueeze(0), detections[:, :4], debug=debug, target='cpu') > nms_thres
+            else:
+                large_overlap = bbox_iou(detections[0, :4].unsqueeze(0), detections[:, :4]) > nms_thres
+            
+            if debug:
+                print(f"bbox_iou(detections[0, :4].unsqueeze(0), detections[:, :4])={bbox_iou(detections[0, :4].unsqueeze(0), detections[:, :4])}")
+                print(f"iou large_overlap={bbox_iou(detections[0, :4].unsqueeze(0), detections[:, :4])}")
+                print(f"bbox_giou(detections[0, :4].unsqueeze(0), detections[:, :4])={bbox_giou(detections[0, :4].unsqueeze(0), detections[:, :4])}")
+                print(f"giou large_overlap={bbox_giou(detections[0, :4].unsqueeze(0), detections[:, :4])}")
+
             label_match = detections[0, -1] == detections[:, -1]
             # Indices of boxes with lower confidence scores, large IOUs and matching labels
             invalid = large_overlap & label_match
@@ -315,7 +433,11 @@ def build_targets(pred_boxes, pred_cls, target, anchors, ignore_thres):
     tcls[b, best_n, gj, gi, target_labels] = 1
     # Compute label correctness and iou at best anchor
     class_mask[b, best_n, gj, gi] = (pred_cls[b, best_n, gj, gi].argmax(-1) == target_labels).float()
-    iou_scores[b, best_n, gj, gi] = bbox_iou(pred_boxes[b, best_n, gj, gi], target_boxes, x1y1x2y2=False)
+
+    if USE_GIOU:
+        iou_scores[b, best_n, gj, gi] = bbox_giou(pred_boxes[b, best_n, gj, gi], target_boxes, x1y1x2y2=False)
+    else:
+        iou_scores[b, best_n, gj, gi] = bbox_iou(pred_boxes[b, best_n, gj, gi], target_boxes, x1y1x2y2=False)
 
     tconf = obj_mask.float()
     return iou_scores, class_mask, obj_mask, noobj_mask, tx, ty, tw, th, tcls, tconf

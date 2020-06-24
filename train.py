@@ -26,9 +26,14 @@ import warnings
 warnings.simplefilter('ignore', category=DeprecationWarning)
 
 import logging
+from utils.utils import USE_GIOU
+from tqdm import tqdm
 
+from shutil import copyfile
 
-if __name__ == "__main__":
+report_map = 0
+
+def run(params, exec_main=False):
     parser = argparse.ArgumentParser()
     parser.add_argument("--epochs", type=int, default=100, help="number of epochs")
     parser.add_argument("--batch_size", type=int, default=8, help="size of each image batch")
@@ -44,6 +49,7 @@ if __name__ == "__main__":
     parser.add_argument("--multiscale_training", default=True, help="allow for multi-scale training")
     parser.add_argument("--tb_dir", default="logs", help="tensord record file dir")
     parser.add_argument("--resume", default=0, type=int, help="resume epoch")
+    parser.add_argument("--iou", default='iou', help="iou type")
     opt = parser.parse_args()
 
     logger = Logger(opt.tb_dir)
@@ -60,6 +66,17 @@ if __name__ == "__main__":
     train_path = data_config["train"]
     valid_path = data_config["valid"]
     class_names = load_classes(data_config["names"])
+
+    # Set IOU
+    if opt.iou == 'giou':
+        USE_GIOU = True
+
+    # Set HPs
+    batch_size = opt.batch_size if exec_main else params.get('batch_size')
+    step = params.get('step') if params != {} else None
+    gamma = params.get('gamma') if params != {} else None
+    learn_rate = params.get('learn_rate') if params != {} else 0.001
+    weight_decay = params.get('weight_decay') if params != {} else 0
 
     # Initiate model
     model = Darknet(opt.model_def).to(device)
@@ -83,7 +100,9 @@ if __name__ == "__main__":
         collate_fn=dataset.collate_fn,
     )
 
-    optimizer = torch.optim.Adam(model.parameters())
+    optimizer = torch.optim.Adam(model.parameters(), lr=learn_rate, weight_decay=weight_decay)
+    if params != {}:
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step, gamma)
 
     metrics = [
         "grid_size",
@@ -104,6 +123,7 @@ if __name__ == "__main__":
 
     max_map = 0
     save_model = False
+    best_model = None
 
     for epoch in range(opt.resume, opt.resume+opt.epochs):
         model.train()
@@ -112,6 +132,7 @@ if __name__ == "__main__":
         logging.info(f"\n [epoch {epoch}]\n")
         total_loss = 0
 
+        pbar = tqdm(total=len(dataloader))
         for batch_i, (_, imgs, targets) in enumerate(dataloader):
             batches_done = len(dataloader) * epoch + batch_i
 
@@ -125,6 +146,8 @@ if __name__ == "__main__":
                 # Accumulates gradient before each step
                 optimizer.step()
                 optimizer.zero_grad()
+                if params != {}:
+                    lr_scheduler.step()
 
             # ----------------
             #   Log progress
@@ -151,8 +174,10 @@ if __name__ == "__main__":
                 tensorboard_log += [("loss", loss.item())]
                 logger.list_of_scalars_summary(tensorboard_log, batches_done)
 
-            # log_str += AscqiiTable(metric_table).table
-            # log_str += f"\nTotal loss {loss.item()}"
+            if i == len(dataloader)-1:
+                log_str += AsciiTable(metric_table).table
+                log_str += f"\nTotal loss {loss.item()}"
+                logging.info(log_str)
 
             # Determine approximate time left for epoch
             epoch_batches_left = len(dataloader) - (batch_i + 1)
@@ -164,6 +189,8 @@ if __name__ == "__main__":
             total_loss += loss.item()
 
             model.seen += imgs.size(0)
+            pbar.update(1)
+        pbar.close()
 
         if epoch % opt.evaluation_interval == 0:
             logging.info("\n---- Evaluating Model ----")
@@ -194,9 +221,19 @@ if __name__ == "__main__":
 
             if AP.mean() >= max_map:
                 max_map = AP.mean()
+                report_map = max_map
                 save_model = True
 
         if epoch % opt.checkpoint_interval == 0 and save_model == True:
             logging.info(f"mAP = {max_map}, save model epoch = {epoch}")
             torch.save(model.state_dict(), f"checkpoints/yolov3_ckpt_%d.pth" % epoch)
+            best_model = epoch
             save_model = False
+            
+    # save the best model to the tb dir
+    copyfile(f"checkpoints/yolov3_ckpt_{best_model}.pth", f"{opt.tb_dir}/yolov3_ckpt_{best_model}.pth")
+
+
+if __name__ == "__main__":
+    param = {}
+    run(param, exec_main=True)

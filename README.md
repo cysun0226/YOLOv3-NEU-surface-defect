@@ -1,8 +1,11 @@
-DLSR Final Project Report
-=
+YOLOv3-NEU-surface-defect
+= 
+
+* For the better latex support, recommend to refer to [Hackmd version](https://hackmd.io/ep6xcikwSieqwA3Ocah3Yg?view).
+* Co-worked with [chilinHs](https://github.com/chilinHs).
 
 ## Introduction
-The topic of our final project is to perform **object detection** on **NEU surface defect database**[[1]](http://faculty.neu.edu.cn/yunhyan/NEU_surface_defect_database.html). NEU surface defect database is a dataset that contains six kinds of typical surface defects, and each defect includes 300 samples.
+The topic of our project is to perform **object detection** on **NEU surface defect database**[[1]](http://faculty.neu.edu.cn/yunhyan/NEU_surface_defect_database.html). NEU surface defect database is a dataset that contains six kinds of typical surface defects, and each defect includes 300 samples.
 
 ![](https://i.imgur.com/bZDsOEGm.jpg)
 
